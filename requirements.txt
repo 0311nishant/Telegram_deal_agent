@@ -1,7 +1,6 @@
 apscheduler
 beautifulsoup4
 httpx
-python-dotenv
 requests
 telethon
 Flask

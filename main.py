@@ -76,19 +76,19 @@ def check_configuration() -> bool:
     
     # Check Telegram credentials
     if not TELEGRAM_API_ID or TELEGRAM_API_ID == "your_api_id_here":
-        errors.append("❌ TELEGRAM_API_ID not configured in .env")
+        errors.append("❌ TELEGRAM_API_ID not configured in environment")
     
     if not TELEGRAM_API_HASH or TELEGRAM_API_HASH == "your_api_hash_here":
-        errors.append("❌ TELEGRAM_API_HASH not configured in .env")
+        errors.append("❌ TELEGRAM_API_HASH not configured in environment")
     
     if not TELEGRAM_PHONE or TELEGRAM_PHONE == "+91XXXXXXXXXX":
-        errors.append("❌ TELEGRAM_PHONE not configured in .env")
+        errors.append("❌ TELEGRAM_PHONE not configured in environment")
     
     # Check API keys
     from config import OPENROUTER_API_KEY
     
     if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your_openrouter_key_here":
-        errors.append("❌ OPENROUTER_API_KEY not configured in .env")
+        errors.append("❌ OPENROUTER_API_KEY not configured in environment")
     
     # Check alert username
     if not ALERT_USERNAME or ALERT_USERNAME == "your_second_account_username":
@@ -99,8 +99,8 @@ def check_configuration() -> bool:
         print("\n🚨 CONFIGURATION ERRORS:\n")
         for error in errors:
             print(f"   {error}")
-        print("\n💡 Please edit your .env file with real credentials.")
-        print("   See .env.example for reference.\n")
+        print("\n💡 Please configure the required environment variables in Railway.")
+        print("   See the README for the full list of required variables.\n")
         return False
     
     if warnings:
@@ -462,7 +462,7 @@ def telegram_login():
         session_string = client.session.save()
         
         print("\n" + "="*70)
-        print("✅ LOGIN SUCCESSFUL. Add this session string to your .env file.")
+        print("✅ LOGIN SUCCESSFUL. Add this session string to your Railway environment variables.")
         print("\n   TELEGRAM_SESSION_STRING=" + session_string)
         print("="*70)
         
@@ -578,7 +578,7 @@ NEED HELP?
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Check the README.md for detailed documentation.
-  Make sure your .env file is properly configured.
+  Make sure your environment variables are properly configured in Railway.
 
 """
     print(help_text)
