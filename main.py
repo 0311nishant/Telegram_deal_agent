@@ -273,6 +273,8 @@ async def run_full_system():
         # This will use the session string if available, preventing interactive login
         from config import TELEGRAM_SESSION_STRING
         session = TELEGRAM_SESSION_STRING or SESSION_FILE
+        if not TELEGRAM_SESSION_STRING:
+            os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
         temp_client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
         await temp_client.start(phone=TELEGRAM_PHONE)
         await run_discovery_safe(temp_client)
@@ -283,6 +285,8 @@ async def run_full_system():
     from config import TELEGRAM_SESSION_STRING
     # Use session string for deployment, fall back to file for local dev
     session = TELEGRAM_SESSION_STRING or SESSION_FILE
+    if not TELEGRAM_SESSION_STRING:
+        os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
     client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
     # Register Agent 3 (Converter) DM handler
@@ -331,6 +335,8 @@ def run_discovery_now():
     async def _run():
         from config import TELEGRAM_SESSION_STRING, SESSION_FILE
         session = TELEGRAM_SESSION_STRING or SESSION_FILE
+        if not TELEGRAM_SESSION_STRING:
+            os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
         async with TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
             await run_discovery_safe(client)
     asyncio.run(_run())
@@ -343,6 +349,8 @@ def run_broadcast_now(slot: str = "morning"):
     async def _run():
         from config import TELEGRAM_SESSION_STRING, SESSION_FILE
         session = TELEGRAM_SESSION_STRING or SESSION_FILE
+        if not TELEGRAM_SESSION_STRING:
+            os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
         async with TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
             await run_broadcast_safe(client, slot)
     asyncio.run(_run())
