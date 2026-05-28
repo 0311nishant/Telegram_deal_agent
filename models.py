@@ -85,17 +85,17 @@ def init_database():
     if not IS_POSTGRES:
         os.makedirs("logs", exist_ok=True)
 
-    # Ensure the .env file is actually loaded/configured
+    # Ensure required credentials are configured
     from config import TELEGRAM_API_ID
     if not TELEGRAM_API_ID or TELEGRAM_API_ID == "your_api_id_here":
-        print("⚠️ WARNING: .env file is not configured with real credentials!")
+        print("⚠️ WARNING: TELEGRAM_API_ID is not configured in environment variables!")
 
     try:
         Base.metadata.create_all(bind=engine)
         print("✅ Tables initialized successfully (or already exist).")
     except OperationalError as e:
         print(f"❌ DATABASE CONNECTION FAILED: {e}")
-        print("   Please ensure your DATABASE_URL is correct in your .env file.")
+        print("   Please ensure your DATABASE_URL is correct in your Railway environment variables.")
         if IS_POSTGRES:
             print("   It should look like: postgresql://user:password@host:port/dbname")
         exit(1) # Exit if we can't connect to the DB
