@@ -10,18 +10,56 @@ from contextlib import contextmanager
 
 from config import DATABASE_URL
 
-# Use DATABASE_URL if available (for Railway), otherwise fall back to local SQLite
-IS_POSTGRES = DATABASE_URL is not None
-
-if IS_POSTGRES:
-    engine = create_engine(DATABASE_URL)
-else:
-    # Ensure the local data directory exists for SQLite
-    os.makedirs("data", exist_ok=True)
-    engine = create_engine(f"sqlite:///data/agent.db")
-
 Base = declarative_base()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Module-level cache — populated on first use, not at import time
+_engine = None
+_session_local = None
+
+
+def get_engine():
+    """Return the SQLAlchemy engine, creating it on the first call.
+
+    Deferred until runtime so that the DATABASE_URL environment variable
+    (which may be a Railway service reference like ${{Postgres.DATABASE_URL}})
+    is fully resolved before we attempt to connect.
+    """
+    global _engine
+    if _engine is not None:
+        return _engine
+
+    # Re-read at call time so Railway's interpolated value is available
+    db_url = os.getenv("DATABASE_URL") or DATABASE_URL
+
+    if db_url:
+        try:
+            _engine = create_engine(db_url)
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not create database engine from DATABASE_URL: {e}\n"
+                "Ensure DATABASE_URL is set correctly in your Railway environment variables.\n"
+                "It should look like: postgresql://user:password@host:port/dbname"
+            ) from e
+    else:
+        # Fall back to local SQLite for development
+        os.makedirs("data", exist_ok=True)
+        _engine = create_engine("sqlite:///data/agent.db")
+
+    return _engine
+
+
+def get_session_local():
+    """Return the SessionLocal factory, creating it on the first call."""
+    global _session_local
+    if _session_local is None:
+        _session_local = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
+    return _session_local
+
+
+def _is_postgres() -> bool:
+    """Return True if we are configured to use PostgreSQL."""
+    db_url = os.getenv("DATABASE_URL") or DATABASE_URL
+    return db_url is not None
 
 # ─────────────────────────────────────────
 # DATABASE MODELS (SQLAlchemy)
@@ -70,7 +108,7 @@ class BroadcastLog(Base):
 @contextmanager
 def get_db_session():
     """Provide a transactional scope around a series of operations."""
-    session = SessionLocal()
+    session = get_session_local()()
     try:
         yield session
         session.commit()
@@ -82,7 +120,7 @@ def get_db_session():
 
 def init_database():
     """Create database tables if they don't exist."""
-    if not IS_POSTGRES:
+    if not _is_postgres():
         os.makedirs("logs", exist_ok=True)
 
     # Ensure required credentials are configured
@@ -91,12 +129,12 @@ def init_database():
         print("⚠️ WARNING: TELEGRAM_API_ID is not configured in environment variables!")
 
     try:
-        Base.metadata.create_all(bind=engine)
+        Base.metadata.create_all(bind=get_engine())
         print("✅ Tables initialized successfully (or already exist).")
     except OperationalError as e:
         print(f"❌ DATABASE CONNECTION FAILED: {e}")
         print("   Please ensure your DATABASE_URL is correct in your Railway environment variables.")
-        if IS_POSTGRES:
+        if _is_postgres():
             print("   It should look like: postgresql://user:password@host:port/dbname")
         exit(1) # Exit if we can't connect to the DB
 
