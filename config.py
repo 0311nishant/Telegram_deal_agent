@@ -14,7 +14,7 @@ DATABASE_URL      = os.getenv("DATABASE_URL") # For PostgreSQL
 # ─────────────────────────────────────────
 # MODELS
 # ─────────────────────────────────────────
-DISCOVERY_MODEL  = "perplexity/sonar"               # web search — Agent 1
+DISCOVERY_MODEL  = "perplexity/sonar-pro"           # web search — Agent 1
 CONVERTER_MODEL  = "anthropic/claude-haiku-3-5"     # DM conversion — Agent 3
 
 # ─────────────────────────────────────────

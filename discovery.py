@@ -106,15 +106,15 @@ async def search_perplexity(client: httpx.AsyncClient, query: str) -> list:
             {
                 "role": "system",
                 "content": (
-                    "You find Telegram group and channel links. "
-                    "Return ONLY a plain list of t.me/ links and @usernames. "
+                    "You find Telegram group links only (no channels). "
+                    "Return ONLY a plain list of t.me/ links and @usernames for groups. "
                     "No explanations, no formatting, no markdown."
                 )
             },
             {
                 "role": "user",
                 "content": (
-                    f"Find all Telegram groups and channels for: {query}. "
+                    f"Find Telegram groups (not channels) for: {query}. "
                     "List every t.me/ link or @username you find. One per line."
                 )
             }
@@ -193,16 +193,16 @@ async def scrape_tgstat(client: httpx.AsyncClient, query: str, country_code: str
 
 
 # ─────────────────────────────────────────
-# SOURCE 3 — TELEMETR.IO
+# SOURCE 3 — TELEMETR.IO (GROUPS)
 # ─────────────────────────────────────────
 
-async def scrape_telemetr(client: httpx.AsyncClient, query: str, country_code: str = None) -> list:
-    """Scrapes telemetr.io — second Telegram directory"""
+async def scrape_telemetr_groups(client: httpx.AsyncClient, query: str, country_code: str = None) -> list:
+    """Scrapes telemetr.io groups directory"""
     params = f"?search={requests.utils.quote(query)}"
     if country_code:
         params += f"&country={country_code.upper()}"
 
-    url = f"https://telemetr.io/en/channels{params}"
+    url = f"https://telemetr.io/en/groups{params}"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -218,16 +218,16 @@ async def scrape_telemetr(client: httpx.AsyncClient, query: str, country_code: s
         results = [
             {
                 "username": u,
-                "source": "telemetr",
+                "source": "telemetr_groups",
                 "country": country_code or "unknown",
                 "query_used": query
             }
             for u in usernames
         ]
-        log.info(f"telemetr [{query}] [{country_code}] → {len(results)} groups")
+        log.info(f"telemetr groups [{query}] [{country_code}] → {len(results)} groups")
         return results
     except Exception as e:
-        log.error(f"telemetr error [{query}]: {e}")
+        log.error(f"telemetr groups error [{query}]: {e}")
         return []
 
 
@@ -240,7 +240,7 @@ async def scrape_google(client: httpx.AsyncClient, query: str, country: str = "u
     country_data = COUNTRIES.get(country, {})
     google_domain = country_data.get("google_domain", "https://www.google.com")
 
-    full_query = f"{query} site:t.me OR telegram group"
+    full_query = f"{query} telegram group site:t.me -channel -channels"
     url = f"{google_domain}/search?q={requests.utils.quote(full_query)}&num=20"
     headers = {
         "User-Agent": (
@@ -319,6 +319,39 @@ def filter_quality(groups: list) -> list:
     return valid
 
 
+async def filter_groups_only(client: TelegramClient, groups: list) -> list:
+    """Keep only Telegram groups (exclude channels)."""
+    from telethon.errors import FloodWaitError, UsernameInvalidError, UsernameNotOccupiedError
+
+    kept = []
+    for g in groups:
+        username = g.get("username", "").strip()
+        if not username:
+            continue
+        try:
+            entity = await client.get_entity(username)
+            is_megagroup = getattr(entity, "megagroup", False)
+            is_gigagroup = getattr(entity, "gigagroup", False)
+            is_broadcast = getattr(entity, "broadcast", False)
+
+            if (is_megagroup or is_gigagroup) and not is_broadcast:
+                kept.append(g)
+            else:
+                log.info(f"Skipping channel @{username}")
+        except FloodWaitError as e:
+            wait_seconds = int(getattr(e, "seconds", 0))
+            if wait_seconds <= 0:
+                wait_seconds = 60
+            log.warning(f"FloodWaitError while checking @{username}: sleeping {wait_seconds}s")
+            await asyncio.sleep(wait_seconds + 1)
+        except (UsernameInvalidError, UsernameNotOccupiedError) as e:
+            log.warning(f"Invalid username @{username}: {type(e).__name__}")
+        except Exception as e:
+            log.warning(f"Failed to verify @{username} type: {e}")
+
+    return kept
+
+
 # ─────────────────────────────────────────
 # MAIN DISCOVERY RUNNER
 # ─────────────────────────────────────────
@@ -362,11 +395,11 @@ async def run_discovery(client: TelegramClient):
                 all_found.extend(results)
                 await asyncio.sleep(3)
 
-        # ── SOURCE 3: telemetr (country targeted)
-        print("[3/5] telemetr.io...")
+        # ── SOURCE 3: telemetr groups directory
+        print("[3/5] telemetr.io groups...")
         for country in todays_countries:
             for query in random.sample(category_queries, 2):
-                results = await scrape_telemetr(http_client, query, country)
+                results = await scrape_telemetr_groups(http_client, query, country)
                 all_found.extend(results)
                 await asyncio.sleep(3)
 
@@ -398,6 +431,10 @@ async def run_discovery(client: TelegramClient):
     filtered = filter_quality(all_found)
     print(f"📊 After quality filter: {len(filtered)}")
 
+    print("🔎 Verifying group-only usernames (excluding channels)...")
+    filtered = await filter_groups_only(client, filtered)
+    print(f"📊 After group-only filter: {len(filtered)}")
+
     added = add_groups(filtered)
     stats = get_groups_stats()
 
@@ -413,7 +450,7 @@ async def run_discovery(client: TelegramClient):
         from telethon.tl.functions.channels import JoinChannelRequest
         from telethon.errors import (
             ChannelsTooMuchError, ChannelPrivateError, InviteRequestSentError,
-            UserAlreadyParticipantError
+            UserAlreadyParticipantError, FloodWaitError
         )
 
         # Get the usernames of the groups just added
@@ -433,6 +470,13 @@ async def run_discovery(client: TelegramClient):
                 print("  ⚠️  Reached Telegram's channel limit. Cannot join more groups.")
                 log.error("ChannelsTooMuchError: Cannot join more groups.")
                 break # Stop trying to join
+            except FloodWaitError as e:
+                wait_seconds = int(getattr(e, "seconds", 0))
+                if wait_seconds <= 0:
+                    wait_seconds = 60
+                print(f"  ⏳ Flood wait for {wait_seconds}s. Pausing before next join...")
+                log.warning(f"FloodWaitError: sleeping {wait_seconds}s before continuing.")
+                await asyncio.sleep(wait_seconds + 1)
             except (ChannelPrivateError, ValueError, InviteRequestSentError) as e:
                 print(f"  🚫 Cannot join @{username} ({type(e).__name__}). Marking as dead.")
                 log.warning(f"Could not join @{username} ({type(e).__name__}). Marking as dead.")
