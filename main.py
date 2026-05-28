@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
  
 from models import init_database, get_groups_stats, get_conversation
 from config import (
@@ -318,8 +319,10 @@ async def run_full_system():
         else:
             print("\n⚠️  Group database is empty. Performing initial discovery run...")
             log.info("Database empty, performing initial discovery.")
-            session = TELEGRAM_SESSION_STRING or SESSION_FILE
-            if not TELEGRAM_SESSION_STRING:
+            if TELEGRAM_SESSION_STRING:
+                session = StringSession(TELEGRAM_SESSION_STRING)
+            else:
+                session = SESSION_FILE
                 os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
             temp_client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
             await temp_client.start(phone=TELEGRAM_PHONE)
@@ -329,8 +332,10 @@ async def run_full_system():
 
     # Create a single, shared client
     # Use session string for deployment, fall back to file for local dev
-    session = TELEGRAM_SESSION_STRING or SESSION_FILE
-    if not TELEGRAM_SESSION_STRING:
+    if TELEGRAM_SESSION_STRING:
+        session = StringSession(TELEGRAM_SESSION_STRING)
+    else:
+        session = SESSION_FILE
         os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
     client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
 
@@ -379,8 +384,10 @@ def run_discovery_now():
     init_database() # Ensure files exist for manual runs
     async def _run():
         from config import TELEGRAM_SESSION_STRING, SESSION_FILE
-        session = TELEGRAM_SESSION_STRING or SESSION_FILE
-        if not TELEGRAM_SESSION_STRING:
+        if TELEGRAM_SESSION_STRING:
+            session = StringSession(TELEGRAM_SESSION_STRING)
+        else:
+            session = SESSION_FILE
             os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
         async with TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
             await run_discovery_safe(client)
@@ -393,8 +400,10 @@ def run_broadcast_now(slot: str = "morning"):
     init_database()
     async def _run():
         from config import TELEGRAM_SESSION_STRING, SESSION_FILE
-        session = TELEGRAM_SESSION_STRING or SESSION_FILE
-        if not TELEGRAM_SESSION_STRING:
+        if TELEGRAM_SESSION_STRING:
+            session = StringSession(TELEGRAM_SESSION_STRING)
+        else:
+            session = SESSION_FILE
             os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
         async with TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
             await run_broadcast_safe(client, slot)
