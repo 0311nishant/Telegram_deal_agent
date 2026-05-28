@@ -413,7 +413,7 @@ async def run_discovery(client: TelegramClient):
         from telethon.tl.functions.channels import JoinChannelRequest
         from telethon.errors import (
             ChannelsTooMuchError, ChannelPrivateError, InviteRequestSentError,
-            UserAlreadyParticipantError, ValueError
+            UserAlreadyParticipantError
         )
 
         # Get the usernames of the groups just added
