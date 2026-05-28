@@ -12,6 +12,7 @@ TELEGRAM_PHONE    = os.getenv("TELEGRAM_PHONE")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # For Agents 1 & 3
 TELEGRAM_SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING") # For deployment
 ALERT_USERNAME    = os.getenv("ALERT_TELEGRAM_USERNAME")
+DATABASE_URL      = os.getenv("DATABASE_URL") # For PostgreSQL
 
 # ─────────────────────────────────────────
 # MODELS

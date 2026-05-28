@@ -1,86 +1,104 @@
 import json
 import os
-import sqlite3
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Set
-from config import DATABASE_FILE
+from sqlalchemy import create_engine, Column, String, Integer, Text, Boolean, MetaData, Table
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.exc import OperationalError
+from contextlib import contextmanager
 
+from config import DATABASE_URL
+
+# Use DATABASE_URL if available (for Railway), otherwise fall back to local SQLite
+IS_POSTGRES = DATABASE_URL is not None
+
+if IS_POSTGRES:
+    engine = create_engine(DATABASE_URL)
+else:
+    # Ensure the local data directory exists for SQLite
+    os.makedirs("data", exist_ok=True)
+    engine = create_engine(f"sqlite:///data/agent.db")
+
+Base = declarative_base()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# ─────────────────────────────────────────
+# DATABASE MODELS (SQLAlchemy)
+# ─────────────────────────────────────────
+
+class Group(Base):
+    __tablename__ = "groups"
+    username = Column(String, primary_key=True)
+    discovered_at = Column(String, nullable=False)
+    source = Column(String)
+    country = Column(String)
+    member_count = Column(Integer, default=0)
+    category = Column(String)
+    last_sent = Column(String)
+    times_sent = Column(Integer, default=0)
+    status = Column(String, nullable=False, default='active')
+    query_used = Column(String)
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    user_id = Column(Integer, primary_key=True)
+    name = Column(String)
+    username = Column(String)
+    messages = Column(Text)  # JSON blob
+    lead_score = Column(String, default='cold')
+    first_contact = Column(String)
+    last_active = Column(String)
+    alerted = Column(Boolean, default=False)
+    alert_type = Column(String)
+    project_secured_at = Column(String)
+
+class BroadcastLog(Base):
+    __tablename__ = "broadcast_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    log_date = Column(String, nullable=False)
+    slot = Column(String, nullable=False)
+    sent = Column(Integer, default=0)
+    skipped = Column(Integer, default=0)
+    failed = Column(Integer, default=0)
+    log_time = Column(String, nullable=False)
 
 # ─────────────────────────────────────────
 # DATABASE SETUP & UTILITIES
 # ─────────────────────────────────────────
 
-def _db_connect() -> sqlite3.Connection:
-    """Establish a connection to the SQLite database."""
-    os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect(DATABASE_FILE)
-    conn.row_factory = sqlite3.Row  # Makes rows accessible by column name
-    return conn
+@contextmanager
+def get_db_session():
+    """Provide a transactional scope around a series of operations."""
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 def init_database():
     """Create database tables if they don't exist."""
-    os.makedirs("data", exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
+    if not IS_POSTGRES:
+        os.makedirs("logs", exist_ok=True)
 
     # Ensure the .env file is actually loaded/configured
     from config import TELEGRAM_API_ID
     if not TELEGRAM_API_ID or TELEGRAM_API_ID == "your_api_id_here":
         print("⚠️ WARNING: .env file is not configured with real credentials!")
 
-    conn = _db_connect()
-    cursor = conn.cursor()
-
-    # Groups table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS groups (
-        username TEXT PRIMARY KEY,
-        discovered_at TEXT NOT NULL,
-        source TEXT,
-        country TEXT,
-        member_count INTEGER DEFAULT 0,
-        category TEXT,
-        last_sent TEXT,
-        times_sent INTEGER DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'active',
-        query_used TEXT
-    )
-    """)
-    print("✅ Table 'groups' initialized.")
-
-    # Conversations table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS conversations (
-        user_id INTEGER PRIMARY KEY,
-        name TEXT,
-        username TEXT,
-        messages TEXT, -- JSON blob
-        lead_score TEXT DEFAULT 'cold',
-        first_contact TEXT,
-        last_active TEXT,
-        alerted BOOLEAN DEFAULT 0,
-        alert_type TEXT,
-        project_secured_at TEXT
-    )
-    """)
-    print("✅ Table 'conversations' initialized.")
-
-    # Broadcast logs table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS broadcast_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        log_date TEXT NOT NULL,
-        slot TEXT NOT NULL,
-        sent INTEGER DEFAULT 0,
-        skipped INTEGER DEFAULT 0,
-        failed INTEGER DEFAULT 0,
-        log_time TEXT NOT NULL
-    )
-    """)
-    print("✅ Table 'broadcast_logs' initialized.")
-
-    conn.commit()
-    conn.close()
-
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("✅ Tables initialized successfully (or already exist).")
+    except OperationalError as e:
+        print(f"❌ DATABASE CONNECTION FAILED: {e}")
+        print("   Please ensure your DATABASE_URL is correct in your .env file.")
+        if IS_POSTGRES:
+            print("   It should look like: postgresql://user:password@host:port/dbname")
+        exit(1) # Exit if we can't connect to the DB
 
 # ─────────────────────────────────────────
 # GROUP MODEL
@@ -88,111 +106,79 @@ def init_database():
 
 def get_active_groups() -> List[Dict[str, Any]]:
     """Returns only groups eligible for broadcasting."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM groups WHERE status = 'active'")
-    groups = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return groups
+    with get_db_session() as session:
+        groups = session.query(Group).filter(Group.status == 'active').all()
+        return [g.__dict__ for g in groups]
 
 def get_group_usernames() -> Set[str]:
     """Returns set of all known usernames for deduplication."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT username FROM groups")
-    usernames = {row['username'].lower() for row in cursor.fetchall()}
-    conn.close()
-    return usernames
+    with get_db_session() as session:
+        return {g.username.lower() for g in session.query(Group.username).all()}
 
 def add_groups(new_groups: List[Dict[str, Any]]) -> int:
-    """
-    Appends new groups to the database.
-    Skips duplicates. Returns count of actually added groups.
-    """
-    existing_usernames = get_group_usernames()
-    groups_to_add = []
-
-    for group in new_groups:
-        username = group.get("username", "").lower().strip()
-        if not username or username in existing_usernames:
-            continue
+    """Appends new groups to the database. Skips duplicates."""
+    with get_db_session() as session:
+        existing_usernames = {g[0].lower() for g in session.query(Group.username).all()}
+        groups_to_add = []
         
-        groups_to_add.append((
-            username,
-            datetime.now().isoformat(),
-            group.get("source", "unknown"),
-            group.get("country", "unknown"),
-            group.get("member_count", 0),
-            group.get("category", "unknown"),
-            "active",
-            group.get("query_used", "")
-        ))
-        existing_usernames.add(username) # Avoid adding duplicates from the same batch
+        for group_data in new_groups:
+            username = group_data.get("username", "").lower().strip()
+            if not username or username in existing_usernames:
+                continue
+            
+            groups_to_add.append(Group(
+                username=username,
+                discovered_at=datetime.now().isoformat(),
+                source=group_data.get("source", "unknown"),
+                country=group_data.get("country", "unknown"),
+                member_count=group_data.get("member_count", 0),
+                category=group_data.get("category", "unknown"),
+                status="active",
+                query_used=group_data.get("query_used", "")
+            ))
+            existing_usernames.add(username)
 
-    if not groups_to_add:
-        return 0
-
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.executemany("""
-    INSERT INTO groups (username, discovered_at, source, country, member_count, category, status, query_used)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, groups_to_add)
-    conn.commit()
-    added_count = cursor.rowcount
-    conn.close()
-    return added_count
+        if not groups_to_add:
+            return 0
+            
+        session.add_all(groups_to_add)
+        return len(groups_to_add)
 
 def mark_group_status(username: str, status: str):
     """Mark group as forbidden, dead, or active."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE groups SET status = ? WHERE username = ?", (status, username.lower()))
-    conn.commit()
-    conn.close()
+    with get_db_session() as session:
+        group = session.query(Group).filter(Group.username == username.lower()).first()
+        if group:
+            group.status = status
 
 def update_group_sent(username: str):
     """Update last_sent timestamp and increment times_sent."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-    UPDATE groups
-    SET last_sent = ?, times_sent = times_sent + 1
-    WHERE username = ?
-    """, (datetime.now().isoformat(), username.lower()))
-    conn.commit()
-    conn.close()
+    with get_db_session() as session:
+        group = session.query(Group).filter(Group.username == username.lower()).first()
+        if group:
+            group.last_sent = datetime.now().isoformat()
+            group.times_sent = (group.times_sent or 0) + 1
 
 def get_groups_stats() -> Dict[str, Any]:
     """Retrieves statistics about the groups in the database."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-
-    stats = {}
+    stats = {"total": 0, "active": 0, "forbidden": 0, "dead": 0, "by_country": {}, "by_source": {}}
     try:
-        cursor.execute("SELECT COUNT(*) FROM groups")
-        stats['total'] = cursor.fetchone()[0]
+        with get_db_session() as session:
+            stats['total'] = session.query(Group).count()
+            
+            status_counts = session.query(Group.status, func.count(Group.status)).group_by(Group.status).all()
+            for status, count in status_counts:
+                stats[status] = count
 
-        cursor.execute("SELECT status, COUNT(*) FROM groups GROUP BY status")
-        status_counts = {row['status']: row[1] for row in cursor.fetchall()}
-        stats['active'] = status_counts.get('active', 0)
-        stats['forbidden'] = status_counts.get('forbidden', 0)
-        stats['dead'] = status_counts.get('dead', 0)
+            country_counts = session.query(Group.country, func.count(Group.country)).group_by(Group.country).order_by(func.count(Group.country).desc()).all()
+            stats['by_country'] = {country: count for country, count in country_counts}
 
-        cursor.execute("SELECT country, COUNT(*) as count FROM groups GROUP BY country ORDER BY count DESC")
-        stats['by_country'] = {row['country']: row['count'] for row in cursor.fetchall()}
-
-        cursor.execute("SELECT source, COUNT(*) as count FROM groups GROUP BY source ORDER BY count DESC")
-        stats['by_source'] = {row['source']: row['count'] for row in cursor.fetchall()}
-    except sqlite3.OperationalError as e:
-        # This can happen if the DB was just created and is empty
-        print(f"Database might be empty, returning zero stats. Error: {e}")
-        return {"total": 0, "active": 0, "forbidden": 0, "dead": 0, "by_country": {}, "by_source": {}}
-    finally:
-        conn.close()
-    
+            source_counts = session.query(Group.source, func.count(Group.source)).group_by(Group.source).order_by(func.count(Group.source).desc()).all()
+            stats['by_source'] = {source: count for source, count in source_counts}
+    except Exception:
+        # Return zero stats if DB is empty or there's an error
+        return stats
     return stats
-
 
 # ─────────────────────────────────────────
 # CONVERSATION MODEL — Agent 3
@@ -200,67 +186,48 @@ def get_groups_stats() -> Dict[str, Any]:
 
 def load_conversations() -> Dict[str, Any]:
     """Loads all conversations from the database."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM conversations")
-    convos = {}
-    for row in cursor.fetchall():
-        convo = dict(row)
-        convo['messages'] = json.loads(convo.get('messages', '[]'))
-        convos[str(row['user_id'])] = convo
-    conn.close()
-    return convos
+    with get_db_session() as session:
+        convos = {}
+        for convo_obj in session.query(Conversation).all():
+            convo = convo_obj.__dict__
+            convo.pop('_sa_instance_state', None) # Clean up SQLAlchemy state
+            convo['messages'] = json.loads(convo.get('messages', '[]'))
+            convos[str(convo['user_id'])] = convo
+        return convos
 
 def get_conversation(user_id: int) -> Dict[str, Any]:
     """Retrieves a single conversation or returns a new one."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM conversations WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
+    with get_db_session() as session:
+        convo_obj = session.query(Conversation).filter(Conversation.user_id == user_id).first()
+        if convo_obj:
+            convo = convo_obj.__dict__
+            convo.pop('_sa_instance_state', None)
+            convo['messages'] = json.loads(convo.get('messages', '[]'))
+            return convo
+        else:
+            return {
+                "user_id": user_id, "name": "Unknown", "messages": [],
+                "lead_score": "cold", "first_contact": datetime.now().isoformat(),
+                "last_active": datetime.now().isoformat(), "alerted": False
+            }
 
-    if row:
-        convo = dict(row)
-        convo['messages'] = json.loads(convo.get('messages', '[]'))
-        return convo
-    else:
-        return {
-            "user_id": user_id,
-            "name": "Unknown",
-            "messages": [],
-            "lead_score": "cold",
-            "first_contact": datetime.now().isoformat(),
-            "last_active": datetime.now().isoformat(),
-            "alerted": False
-        }
-
-def save_conversation(user_id: int, convo: Dict[str, Any]):
+def save_conversation(user_id: int, convo_data: Dict[str, Any]):
     """Saves a conversation to the database (insert or update)."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    
-    convo['last_active'] = datetime.now().isoformat()
-    messages_json = json.dumps(convo.get('messages', []))
-
-    cursor.execute("""
-    INSERT OR REPLACE INTO conversations (
-        user_id, name, username, messages, lead_score, first_contact,
-        last_active, alerted, alert_type, project_secured_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        convo.get('name'),
-        convo.get('username'),
-        messages_json,
-        convo.get('lead_score', 'cold'),
-        convo.get('first_contact', datetime.now().isoformat()),
-        convo.get('last_active'),
-        convo.get('alerted', False),
-        convo.get('alert_type'),
-        convo.get('project_secured_at')
-    ))
-    conn.commit()
-    conn.close()
+    with get_db_session() as session:
+        convo_obj = session.query(Conversation).filter(Conversation.user_id == user_id).first()
+        if not convo_obj:
+            convo_obj = Conversation(user_id=user_id)
+            session.add(convo_obj)
+        
+        convo_obj.name = convo_data.get('name')
+        convo_obj.username = convo_data.get('username')
+        convo_obj.messages = json.dumps(convo_data.get('messages', []))
+        convo_obj.lead_score = convo_data.get('lead_score', 'cold')
+        convo_obj.first_contact = convo_data.get('first_contact', datetime.now().isoformat())
+        convo_obj.last_active = datetime.now().isoformat()
+        convo_obj.alerted = convo_data.get('alerted', False)
+        convo_obj.alert_type = convo_data.get('alert_type')
+        convo_obj.project_secured_at = convo_data.get('project_secured_at')
 
 def append_message(user_id: int, role: str, content: str, name: str = ""):
     """Appends a message to a conversation."""
@@ -269,33 +236,24 @@ def append_message(user_id: int, role: str, content: str, name: str = ""):
         convo["name"] = name
     
     convo["messages"].append({
-        "role": role,
-        "content": content,
-        "timestamp": datetime.now().isoformat()
+        "role": role, "content": content, "timestamp": datetime.now().isoformat()
     })
-    # Keep last 20 messages only
-    convo["messages"] = convo["messages"][-20:]
-    
+    convo["messages"] = convo["messages"][-20:] # Keep last 20 messages
     save_conversation(user_id, convo)
 
 def update_lead_score(user_id: int, score: str):
     """Updates only the lead score for a conversation."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE conversations SET lead_score = ?, last_active = ? WHERE user_id = ?",
-                   (score, datetime.now().isoformat(), user_id))
-    conn.commit()
-    conn.close()
+    with get_db_session() as session:
+        convo = session.query(Conversation).filter(Conversation.user_id == user_id).first()
+        if convo:
+            convo.lead_score = score
+            convo.last_active = datetime.now().isoformat()
 
 def get_hot_leads() -> List[Dict[str, Any]]:
     """Retrieves all conversations marked as 'hot'."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM conversations WHERE lead_score = 'hot'")
-    leads = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return leads
-
+    with get_db_session() as session:
+        leads = session.query(Conversation).filter(Conversation.lead_score == 'hot').all()
+        return [l.__dict__ for l in leads]
 
 # ─────────────────────────────────────────
 # SENT LOG MODEL — Agent 2
@@ -303,37 +261,27 @@ def get_hot_leads() -> List[Dict[str, Any]]:
 
 def log_broadcast(slot: str, sent: int, skipped: int, failed: int):
     """Logs the result of a broadcast run to the database."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-    INSERT INTO broadcast_logs (log_date, slot, sent, skipped, failed, log_time)
-    VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        datetime.now().strftime("%Y-%m-%d"),
-        slot,
-        sent,
-        skipped,
-        failed,
-        datetime.now().strftime("%H:%M")
-    ))
-    conn.commit()
-    conn.close()
+    with get_db_session() as session:
+        log_entry = BroadcastLog(
+            log_date=datetime.now().strftime("%Y-%m-%d"),
+            slot=slot,
+            sent=sent,
+            skipped=skipped,
+            failed=failed,
+            log_time=datetime.now().strftime("%H:%M")
+        )
+        session.add(log_entry)
 
 def get_broadcast_stats() -> Dict[str, Any]:
     """Retrieves statistics about past broadcasts."""
-    conn = _db_connect()
-    cursor = conn.cursor()
-
-    stats = {}
-    cursor.execute("SELECT COUNT(DISTINCT log_date) FROM broadcast_logs")
-    stats['total_broadcasts'] = cursor.fetchone()[0]
-
-    cursor.execute("SELECT SUM(sent) FROM broadcast_logs")
-    total_sent = cursor.fetchone()[0]
-    stats['total_messages_sent'] = total_sent if total_sent is not None else 0
-
-    cursor.execute("SELECT * FROM broadcast_logs ORDER BY id DESC LIMIT 10")
-    stats['log'] = [dict(row) for row in cursor.fetchall()]
-
-    conn.close()
+    stats = {'total_broadcasts': 0, 'total_messages_sent': 0, 'log': []}
+    try:
+        with get_db_session() as session:
+            stats['total_broadcasts'] = session.query(func.count(func.distinct(BroadcastLog.log_date))).scalar() or 0
+            stats['total_messages_sent'] = session.query(func.sum(BroadcastLog.sent)).scalar() or 0
+            
+            logs = session.query(BroadcastLog).order_by(BroadcastLog.id.desc()).limit(10).all()
+            stats['log'] = [l.__dict__ for l in logs]
+    except Exception:
+        return stats
     return stats

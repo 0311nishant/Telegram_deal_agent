@@ -17,6 +17,11 @@ from config import (
 from discovery import run_discovery
 from broadcaster import broadcast
 from converter import handle_dm, get_conversion_stats, print_stats
+from dashboard import run_dashboard
+import threading
+
+import os
+os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
     filename="logs/main.log",
@@ -240,6 +245,11 @@ async def run_full_system():
     - Agent 1 & 2 on schedule
     - Agent 3 as foreground process (with scheduler in background)
     """
+    # Start the dashboard in a separate thread
+    dashboard_thread = threading.Thread(target=run_dashboard, daemon=True)
+    dashboard_thread.start()
+    log.info("Dashboard thread started.")
+
     print_banner()
     
     # Check configuration
@@ -261,7 +271,9 @@ async def run_full_system():
         log.info("Database empty, performing initial discovery.")
         # We need a temporary client for this initial run
         # This will use the session string if available, preventing interactive login
-        temp_client = TelegramClient(SESSION_FILE, TELEGRAM_API_ID, TELEGRAM_API_HASH)
+        from config import TELEGRAM_SESSION_STRING
+        session = TELEGRAM_SESSION_STRING or SESSION_FILE
+        temp_client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
         await temp_client.start(phone=TELEGRAM_PHONE)
         await run_discovery_safe(temp_client)
         await temp_client.disconnect()
@@ -317,7 +329,9 @@ def run_discovery_now():
     print_banner()
     init_database() # Ensure files exist for manual runs
     async def _run():
-        async with TelegramClient('session', TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
+        from config import TELEGRAM_SESSION_STRING, SESSION_FILE
+        session = TELEGRAM_SESSION_STRING or SESSION_FILE
+        async with TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
             await run_discovery_safe(client)
     asyncio.run(_run())
 
@@ -327,7 +341,9 @@ def run_broadcast_now(slot: str = "morning"):
     print_banner()
     init_database()
     async def _run():
-        async with TelegramClient('session', TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
+        from config import TELEGRAM_SESSION_STRING, SESSION_FILE
+        session = TELEGRAM_SESSION_STRING or SESSION_FILE
+        async with TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH) as client:
             await run_broadcast_safe(client, slot)
     asyncio.run(_run())
 
@@ -362,26 +378,25 @@ def test_configuration():
     # Test 2: Telegram connection
     try:
         from telethon import TelegramClient
-        client = TelegramClient(
-            "test_session",
-            TELEGRAM_API_ID,
-            TELEGRAM_API_HASH
-        )
-        
-        async def test_telegram():
-            await client.connect()
-            if await client.is_user_authorized():
-                successes.append("✅ Telegram connection: Already authorized")
-            else:
-                successes.append("⚠️  Telegram connection: Not authorized (run 'python main.py login' first)")
-            await client.disconnect()
-        
-        asyncio.run(test_telegram())
-        
-        # Clean up test session
-        if os.path.exists("test_session.session"):
-            os.remove("test_session.session")
-            
+        from telethon.sessions import StringSession
+        from config import TELEGRAM_SESSION_STRING
+
+        # The primary test is to see if the session string works
+        if TELEGRAM_SESSION_STRING:
+            client = TelegramClient(StringSession(TELEGRAM_SESSION_STRING), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+
+            async def test_telegram_auth():
+                await client.connect()
+                if await client.is_user_authorized():
+                    successes.append("✅ Telegram connection: Authorized via session string.")
+                else:
+                    errors.append("❌ Telegram connection: Session string is invalid or expired. Run 'login' again.")
+                await client.disconnect()
+
+            asyncio.run(test_telegram_auth())
+        else:
+            # If no session string, we can't test authorization non-interactively.
+            successes.append("⚠️  Telegram connection: No session string found. Run 'login' to create one and test authorization.")
     except Exception as e:
         errors.append(f"❌ Telegram connection failed: {e}")
     
@@ -432,21 +447,23 @@ def telegram_login():
     """Interactive Telegram login"""
     print_banner()
     print("🔐 TELEGRAM LOGIN\n")
-    print("This will create a session file for Telegram authentication.\n")
+    print("This will generate a session string for non-interactive authentication.\n")
     
     from telethon import TelegramClient
+    from telethon.sessions import StringSession
     
-    client = TelegramClient(SESSION_FILE, TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    # Use an in-memory StringSession to generate the session string
+    client = TelegramClient(StringSession(), TELEGRAM_API_ID, TELEGRAM_API_HASH)
     
     async def login():
         await client.start(phone=TELEGRAM_PHONE)
         me = await client.get_me()
+        # The .save() method on a StringSession returns the session string
         session_string = client.session.save()
         
         print("\n" + "="*70)
         print("✅ LOGIN SUCCESSFUL. Add this session string to your .env file.")
-        print("   TELEGRAM_SESSION_STRING=")
-        print(session_string)
+        print("\n   TELEGRAM_SESSION_STRING=" + session_string)
         print("="*70)
         
         print(f"\n✅ Successfully logged in as: {me.first_name} (@{me.username})")
@@ -456,7 +473,7 @@ def telegram_login():
     
     try:
         asyncio.run(login())
-        print("✅ Session file created. You can now run the system.\n")
+        print("✅ Session string generated. You can now run the system.\n")
     except Exception as e:
         print(f"\n❌ Login failed: {e}\n")
         sys.exit(1)
@@ -618,6 +635,15 @@ def main():
             print_banner()
             init_database()
             print_stats()
+        
+        elif command == "string":
+            telegram_login()
+        
+        elif command == "init":
+            init_database()
+        
+        elif command == "discover":
+            run_discovery_now()
         
         else:
             print(f"❌ Unknown command: {command}\n")

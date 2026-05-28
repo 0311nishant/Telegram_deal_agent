@@ -17,6 +17,11 @@ from config import (
 )
 from models import add_groups, get_groups_stats, mark_group_status
 
+import os
+
+# Ensure logs directory exists
+os.makedirs("logs", exist_ok=True)
+
 logging.basicConfig(
     filename="logs/discovery.log",
     level=logging.INFO,

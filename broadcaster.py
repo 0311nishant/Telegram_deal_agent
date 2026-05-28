@@ -123,7 +123,9 @@ async def broadcast(slot: str, client: TelegramClient):
                 failed += 1
                 await asyncio.sleep(60)
 
-    log_broadcast(slot, sent, skipped, failed)
+    finally:
+        # Log the results after the loop finishes
+        log_broadcast(slot, sent, skipped, failed)
 
     summary = (
         f"\n📊 {slot.capitalize()} broadcast complete\n"
