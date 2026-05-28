@@ -257,7 +257,45 @@ async def run_full_system():
         print("❌ System cannot start due to configuration errors.")
         print("   Please fix the issues above and try again.\n")
         sys.exit(1)
-    
+
+    # ── Session guard ──────────────────────────────────────────────────────────
+    # In a Railway (or any container) deployment, interactive Telegram login is
+    # impossible.  Require TELEGRAM_SESSION_STRING to be set so we never attempt
+    # a file-based session that would block waiting for a phone-code prompt.
+    from config import TELEGRAM_SESSION_STRING
+    is_railway = bool(os.getenv("RAILWAY_ENVIRONMENT_NAME") or os.getenv("RAILWAY_PROJECT_ID"))
+    if is_railway and not TELEGRAM_SESSION_STRING:
+        print("\n" + "=" * 70)
+        print("🚨  MISSING REQUIRED ENVIRONMENT VARIABLE: TELEGRAM_SESSION_STRING")
+        print("=" * 70)
+        print("""
+  The app is running inside a Railway deployment but no Telegram session
+  has been provided.  A file-based session cannot be used here because it
+  requires interactive input (phone number + OTP) which is not possible in
+  a container environment.
+
+  ── How to fix ──────────────────────────────────────────────────────────
+
+  1. On your LOCAL machine, generate a session string:
+
+       python main.py login
+
+     The command will print a TELEGRAM_SESSION_STRING value after you
+     complete the one-time phone/OTP verification.
+
+  2. Copy that value and add it to your Railway service:
+
+       Railway dashboard → Your service → Variables
+       → New variable → TELEGRAM_SESSION_STRING = <paste value>
+
+  3. Redeploy (Railway will restart automatically on variable save).
+
+  ────────────────────────────────────────────────────────────────────────
+""")
+        log.error("Startup aborted: TELEGRAM_SESSION_STRING is not set in Railway environment.")
+        sys.exit(1)
+    # ── End session guard ──────────────────────────────────────────────────────
+
     # Initialize data files
     print("🔧 Initializing system...")
     init_database()
@@ -265,24 +303,31 @@ async def run_full_system():
     # Show dashboard
     print_dashboard()
     
-    # Perform initial discovery if database is empty
+    # Perform initial discovery if database is empty.
+    # Only attempt this when a usable session already exists — either the
+    # TELEGRAM_SESSION_STRING (deployment) or an existing local session file
+    # (local dev).  Without a valid session, client.start() would block
+    # waiting for interactive phone/OTP input.
+    has_session = bool(TELEGRAM_SESSION_STRING) or os.path.exists(SESSION_FILE + ".session")
     if get_groups_stats()['total'] == 0:
-        print("\n⚠️  Group database is empty. Performing initial discovery run...")
-        log.info("Database empty, performing initial discovery.")
-        # We need a temporary client for this initial run
-        # This will use the session string if available, preventing interactive login
-        from config import TELEGRAM_SESSION_STRING
-        session = TELEGRAM_SESSION_STRING or SESSION_FILE
-        if not TELEGRAM_SESSION_STRING:
-            os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
-        temp_client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
-        await temp_client.start(phone=TELEGRAM_PHONE)
-        await run_discovery_safe(temp_client)
-        await temp_client.disconnect()
-        print("✅ Initial discovery complete.")
+        if not has_session:
+            print("\n⚠️  Group database is empty but no Telegram session is available yet.")
+            print("   Skipping initial discovery — run 'python main.py login' first,")
+            print("   then restart the system to trigger the initial discovery run.\n")
+            log.warning("Skipped initial discovery: no valid session available.")
+        else:
+            print("\n⚠️  Group database is empty. Performing initial discovery run...")
+            log.info("Database empty, performing initial discovery.")
+            session = TELEGRAM_SESSION_STRING or SESSION_FILE
+            if not TELEGRAM_SESSION_STRING:
+                os.makedirs(os.path.dirname(session) or ".", exist_ok=True)
+            temp_client = TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH)
+            await temp_client.start(phone=TELEGRAM_PHONE)
+            await run_discovery_safe(temp_client)
+            await temp_client.disconnect()
+            print("✅ Initial discovery complete.")
 
     # Create a single, shared client
-    from config import TELEGRAM_SESSION_STRING
     # Use session string for deployment, fall back to file for local dev
     session = TELEGRAM_SESSION_STRING or SESSION_FILE
     if not TELEGRAM_SESSION_STRING:
